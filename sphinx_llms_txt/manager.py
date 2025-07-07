@@ -56,7 +56,6 @@ class LLMSFullManager:
     def set_app(self, app: Sphinx):
         """Set the Sphinx application reference."""
         self.app = app
-        self.collector.set_app(app)
         if self.writer:
             self.writer.app = app
 
@@ -70,7 +69,23 @@ class LLMSFullManager:
         self.processor = DocumentProcessor(self.config, srcdir)
         self.writer = FileWriter(self.config, outdir, self.app)
 
-        # Find sources directory first so we can pass it to get_page_order
+        # Get the correct page order
+        page_order = self.collector.get_page_order()
+
+        if not page_order:
+            logger.warning(
+                "Could not determine page order, skipping llms-full creation"
+            )
+            return
+
+        # Apply exclusion filter if configured
+        page_order = self.collector.filter_excluded_pages(page_order)
+
+        # Determine output file name and location
+        output_filename = self.config.get("llms_txt_full_filename")
+        output_path = Path(outdir) / output_filename
+
+        # Find sources directory
         sources_dir = None
         possible_sources = [
             Path(outdir) / "_sources",
@@ -89,23 +104,14 @@ class LLMSFullManager:
             )
             return
 
-        # Get the correct page order with source suffixes
-        page_order = self.collector.get_page_order(sources_dir)
-
-        if not page_order:
-            logger.warning(
-                "Could not determine page order, skipping llms-full creation"
-            )
-            return
-
-        # Apply exclusion filter if configured
-        page_order = self.collector.filter_excluded_pages(page_order)
-
-        # Determine output file name and location
-        output_filename = self.config.get("llms_txt_full_filename")
-        output_path = Path(outdir) / output_filename
+        # Collect all available source files
+        txt_files = {}
+        for f in sources_dir.glob("**/*.txt"):
+            logger.debug(f"sphinx-llms-txt: Found source file: {f.stem} at {f}")
+            txt_files[f.stem] = f
 
         # Log discovered files and page order
+        logger.debug(f"sphinx-llms-txt: Found {len(txt_files)} source files")
         logger.debug(f"sphinx-llms-txt: Page order (after exclusion): {page_order}")
 
         # Log exclusion patterns
@@ -113,43 +119,33 @@ class LLMSFullManager:
         if exclude_patterns:
             logger.debug(f"sphinx-llms-txt: Exclusion patterns: {exclude_patterns}")
 
-        # Create a mapping from docnames to source files
+        # Create a mapping from docnames to actual file names
         docname_to_file = {}
 
-        # Get the source link suffix from Sphinx config
-        source_link_suffix = (
-            self.app.config.html_sourcelink_suffix if self.app else ".txt"
-        )
-
-        # Handle empty string case specially
-        if source_link_suffix == "":
-            source_link_suffix = ""  # Keep it empty
-        elif not source_link_suffix.startswith("."):
-            source_link_suffix = "." + source_link_suffix
-
-        # Process each (docname, suffix) in the page order
-        for docname, src_suffix in page_order:
+        # Try exact matches first
+        for docname in page_order:
             # Skip excluded pages
-            if exclude_patterns and any(
+            if any(
                 self.collector._match_exclude_pattern(docname, pattern)
                 for pattern in exclude_patterns
             ):
                 continue
 
-            # Build the source file path directly using the known suffix
-            if src_suffix:
-                source_file = sources_dir / f"{docname}{src_suffix}{source_link_suffix}"
-                if source_file.exists():
-                    docname_to_file[docname] = source_file
-                else:
-                    logger.warning(
-                        f"sphinx-llms-txt: Source file not found for: {docname}."
-                        f"Expected: {docname}{src_suffix}{source_link_suffix}"
-                    )
+            if docname in txt_files:
+                docname_to_file[docname] = txt_files[docname]
             else:
-                logger.warning(
-                    f"sphinx-llms-txt: No source suffix determined for: {docname}"
-                )
+                # Try with .rst extension
+                if f"{docname}.rst" in txt_files:
+                    docname_to_file[docname] = txt_files[f"{docname}.rst"]
+                # Try with .txt extension
+                elif f"{docname}.txt" in txt_files:
+                    docname_to_file[docname] = txt_files[f"{docname}.txt"]
+                # Try with underscores instead of hyphens
+                elif docname.replace("-", "_") in txt_files:
+                    docname_to_file[docname] = txt_files[docname.replace("-", "_")]
+                # Try with hyphens instead of underscores
+                elif docname.replace("_", "-") in txt_files:
+                    docname_to_file[docname] = txt_files[docname.replace("_", "-")]
 
         # Generate content
         content_parts = []
@@ -160,7 +156,7 @@ class LLMSFullManager:
         max_lines = self.config.get("llms_txt_full_max_size")
         abort_due_to_max_lines = False
 
-        for docname, _ in page_order:
+        for docname in page_order:
             if docname in docname_to_file:
                 file_path = docname_to_file[docname]
                 content, line_count = self._read_source_file(file_path, docname)
@@ -194,68 +190,65 @@ class LLMSFullManager:
                     added_files.add(file_path.stem)
                     total_line_count += line_count
             else:
-                logger.warning(
-                    f"sphinx-llms-txt: Source file not found for: {docname}. Check that"
-                    f" file exists at _sources/{docname}[suffix]{source_link_suffix}"
-                )
+                logger.warning(f"sphinx-llm-txt: Source file not found for: {docname}")
 
-        # Add any remaining files (in alphabetical order) that aren't in the page order
+        # Add any remaining files (in alphabetical order) if not aborted
         if not abort_due_to_max_lines:
-            # Get all source files in the _sources directory using configured suffixes
-            source_suffixes = self._get_source_suffixes()
-            all_source_files = []
-            for src_suffix in source_suffixes:
-                glob_pattern = f"**/*{src_suffix}{source_link_suffix}"
-                all_source_files.extend(sources_dir.glob(glob_pattern))
+            # Apply the same exclusion filter to remaining files
+            exclude_patterns = self.config.get("llms_txt_exclude")
 
-            processed_paths = set(file.resolve() for file in docname_to_file.values())
+            # Create a set of files to exclude based on their basename
+            excluded_files = set()
+            for pattern in exclude_patterns:
+                if "*" not in pattern and "?" not in pattern:
+                    # For exact patterns, add variants
+                    excluded_files.add(pattern)
+                    excluded_files.add(f"{pattern}.rst")
+                    excluded_files.add(f"{pattern}.txt")
+                    excluded_files.add(pattern.replace("-", "_"))
+                    excluded_files.add(pattern.replace("_", "-"))
 
-            # Find files that haven't been processed yet
-            remaining_source_files = [
-                f for f in all_source_files if f.resolve() not in processed_paths
-            ]
-
-            # Sort the remaining files for consistent ordering
-            remaining_source_files.sort()
-
-            if remaining_source_files:
-                logger.info(
-                    f"Found {len(remaining_source_files)} additional files not in"
-                    f" toctree"
-                )
-
-            for file_path in remaining_source_files:
-                # Extract docname from path by removing the source and link suffixes
-                rel_path = str(file_path.relative_to(sources_dir))
-                docname = None
-
-                # Try each source suffix to find which one this file uses
-                for src_suffix in source_suffixes:
-                    combined_suffix = f"{src_suffix}{source_link_suffix}"
-                    if rel_path.endswith(combined_suffix):
-                        docname = rel_path[: -len(combined_suffix)]  # Remove suffix
-                        break
-
-                if docname is None:
-                    continue
-
-                # Skip excluded docnames
-                if exclude_patterns and any(
-                    self.collector._match_exclude_pattern(docname, pattern)
-                    for pattern in exclude_patterns
-                ):
-                    logger.debug(f"sphinx-llms-txt: Skipping excluded file: {docname}")
-                    continue
-
-                # Read and process the file
-                content, line_count = self._read_source_file(file_path, docname)
+            # Filter remaining files
+            remaining_files = sorted(
+                [
+                    name
+                    for name in txt_files
+                    if name not in added_files
+                    and name not in excluded_files
+                    and not any(
+                        self.collector._match_exclude_pattern(name, pattern)
+                        for pattern in exclude_patterns
+                    )
+                ]
+            )
+            if remaining_files:
+                logger.info(f"Adding remaining files: {remaining_files}")
+            for file_stem in remaining_files:
+                file_path = txt_files[file_stem]
+                content, line_count = self._read_source_file(file_path, file_stem)
 
                 # Check if adding this file would exceed the maximum line count
                 if max_lines is not None and total_line_count + line_count > max_lines:
                     break
 
-                if content:
-                    logger.debug(f"sphinx-llms-txt: Adding remaining file: {docname}")
+                # Double-check that this file should be included
+                should_include = True
+                file_stem = file_path.stem
+                exclude_patterns = self.config.get("llms_txt_exclude")
+
+                if exclude_patterns:
+                    # Check stem against exclusion patterns
+                    if any(
+                        self.collector._match_exclude_pattern(file_stem, pattern)
+                        for pattern in exclude_patterns
+                    ):
+                        logger.debug(
+                            "sphinx-llms-txt: Final exclusion check removed remaining"
+                            f" file: {file_stem}"
+                        )
+                        should_include = False
+
+                if content and should_include:
                     content_parts.append(content)
                     total_line_count += line_count
 
@@ -265,7 +258,7 @@ class LLMSFullManager:
             max_lines is not None and total_line_count > max_lines
         ):
             logger.warning(
-                f"sphinx-llms-txt: Max line limit ({max_lines}) exceeded:"
+                f"sphinx-llm-txt: Max line limit ({max_lines}) exceeded:"
                 f" {total_line_count} > {max_lines}. "
                 f"Not creating llms-full.txt file."
             )
@@ -332,23 +325,5 @@ class LLMSFullManager:
             return content_str, line_count + 1
 
         except Exception as e:
-            logger.error(f"sphinx-llms-txt: Error reading source file {file_path}: {e}")
+            logger.error(f"sphinx-llm-txt: Error reading source file {file_path}: {e}")
             return "", 0
-
-    def _get_source_suffixes(self):
-        """Get all valid source file suffixes from Sphinx configuration.
-
-        Returns:
-            list: List of source file suffixes (e.g., ['.rst', '.md', '.txt'])
-        """
-        if not self.app:
-            return [".rst"]  # Default fallback
-
-        source_suffix = self.app.config.source_suffix
-
-        if isinstance(source_suffix, dict):
-            return list(source_suffix.keys())
-        elif isinstance(source_suffix, list):
-            return source_suffix
-        else:
-            return [source_suffix]  # String format

@@ -3,7 +3,7 @@ File writer module for sphinx-llms-txt.
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List
 
 from sphinx.application import Sphinx
 from sphinx.util import logging
@@ -42,19 +42,19 @@ class FileWriter:
             )
             return True
         except Exception as e:
-            logger.error(f"sphinx-llms-txt: Error writing combined sources file: {e}")
+            logger.error(f"sphinx-llm-txt: Error writing combined sources file: {e}")
             return False
 
     def write_verbose_info_to_file(
         self,
-        page_order: Union[List[str], List[Tuple[str, str]]],
+        page_order: List[str],
         page_titles: Dict[str, str],
         total_line_count: int = 0,
     ) -> bool:
         """Write summary information to the llms.txt file.
 
         Args:
-            page_order: Ordered list of document names or (docname, suffix) tuples
+            page_order: Ordered list of document names
             page_titles: Dictionary mapping docnames to titles
             total_line_count: Total number of lines in the combined content
 
@@ -86,14 +86,7 @@ class FileWriter:
                 # Add description if available
                 description = self.config.get("llms_txt_summary", "")
                 if description:
-                    # Trim leading and trailing whitespace
-                    description = description.strip()
-                    if description:
-                        # Only add blockquote if description is not empty
-                        # Replace newlines with newline + blockquote marker to maintain
-                        # blockquote formatting
-                        description = description.replace("\n", "\n> ")
-                        f.write(f"> {description}\n\n")
+                    f.write(f"> {description}\n\n")
 
                 f.write("## Docs\n\n")
                 # Get base URL from config
@@ -102,12 +95,7 @@ class FileWriter:
                 if not base_url.endswith("/"):
                     base_url += "/"
 
-                for item in page_order:
-                    # Handle both old format (str) and new format (tuple)
-                    if isinstance(item, tuple):
-                        docname, _ = item
-                    else:
-                        docname = item
+                for docname in page_order:
                     title = page_titles.get(docname, docname)
                     f.write(f"- [{title}]({base_url}{docname}.html)\n")
 

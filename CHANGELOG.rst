@@ -1,28 +1,6 @@
 Changelog
 =========
 
-0.3.0
------
-
-- Use first paragraph as default for ``llms_txt_summary``
-  `#22 <https://github.com/jdillard/sphinx-llms-txt/pull/22>`_
-
-0.2.4
------
-
-- Support source file suffix detection
-  `#21 <https://github.com/jdillard/sphinx-llms-txt/pull/21>`_
-
-0.2.3
------
-
-- Remove ``get_and_resolve_toctree`` method
-  `#19 <https://github.com/jdillard/sphinx-llms-txt/pull/19>`_
-- Simplify ``_sources`` lookup
-  `#18 <https://github.com/jdillard/sphinx-llms-txt/pull/18>`_
-- Add sphinx docs
-  `#16 <https://github.com/jdillard/sphinx-llms-txt/pull/16>`_
-
 0.2.2
 -----
 

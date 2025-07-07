@@ -55,29 +55,36 @@ class DocumentProcessor:
     def _extract_relative_document_path(
         self, source_path: Path
     ) -> Tuple[Optional[str], Optional[str], Optional[List[str]]]:
-        """Extract the relative document path from a source file in _sources directory.
-
-        Args:
-            source_path: Path to the source file
+        """Extract the relative document path from a source file in _sources or srcdir.
 
         Returns:
             Tuple of (rel_doc_path, rel_doc_dir, rel_doc_path_parts)
         """
         try:
-            # Extract the part after _sources/
-            path_parts = str(source_path).split("_sources/")
-            if len(path_parts) > 1:
-                rel_doc_path = path_parts[1]
-                # Remove .txt extension if present
-                if rel_doc_path.endswith(".txt"):
-                    rel_doc_path = rel_doc_path[:-4]
-                # Get the directory containing the current document
-                rel_doc_dir = os.path.dirname(rel_doc_path)
-                rel_doc_path_parts = rel_doc_path.split("/")
+            path_str = str(source_path)
 
-                return rel_doc_path, rel_doc_dir, rel_doc_path_parts
+            # Case 1: under _sources/ directory
+            if "_sources/" in path_str:
+                rel_doc_path = path_str.split("_sources/")[1]
+
+            # Case 2: fallback to relative to source directory
+            elif self.srcdir and Path(path_str).startswith(str(self.srcdir)):
+                rel_doc_path = str(Path(source_path).relative_to(Path(self.srcdir)))
+
+            else:
+                return None, None, None
+
+            # Remove .txt extension if present
+            if rel_doc_path.endswith(".txt"):
+                rel_doc_path = rel_doc_path[:-4]
+
+            rel_doc_dir = os.path.dirname(rel_doc_path)
+            rel_doc_path_parts = rel_doc_path.split("/")
+
+            return rel_doc_path, rel_doc_dir, rel_doc_path_parts
+
         except Exception as e:
-            logger.debug(f"sphinx-llms-txt: Error extracting relative path: {e}")
+            logger.debug(f"✨sphinx-llms-txt: Error extracting relative path: {e}")
 
         return None, None, None
 
@@ -109,10 +116,14 @@ class DocumentProcessor:
         """
         return path.startswith(("http://", "https://", "/", "data:"))
     def _is_absolute_or_url(self, path: str) -> bool:
-        """Check if a path is a true absolute path or external URL."""
-        # Accept Sphinx-style build-root paths like /_images/...
-        if path.startswith("/_images/") or path.startswith("/_static/"):
-            return False
+        """Check if a path is a true system absolute path or external URL.
+
+        Sphinx-root-relative paths like '/admin/_images/...' are allowed.
+        """
+        if path.startswith(("/_images/", "/_static/")):
+            return False  # Allow these to be rewritten
+        if re.match(r"^/[a-zA-Z0-9_\-]+/_images/", path):
+            return False  # Allow subdir paths like '/admin/_images/foo.png'
         return path.startswith(("http://", "https://", "/", "data:"))
 
     def _process_path_directives(self, content: str, source_path: Path) -> str:
@@ -140,57 +151,25 @@ class DocumentProcessor:
         is_test = "pytest" in str(source_path) and "subdir" in str(source_path)
 
         def replace_directive_path(match, base_url=base_url, is_test=is_test):
-            prefix = match.group(1)  # The entire directive prefix including whitespace
-            path = match.group(3).strip()  # The path argument
+            prefix = match.group(1)
+            path = match.group(3).strip()
 
-            # Only process relative paths, not absolute paths or URLs
-            if not self._is_absolute_or_url(path):
-                # Special case for test files
-                if is_test:
-                    # Add subdir/ prefix to match test expectations
-                    full_path = "subdir/" + path
+            # Get just the filename from any path like foo.png, _images/foo.png, admin/_images/foo.png
+            filename = os.path.basename(path)
 
-                    # If base_url is set, prepend it to the path
-                    full_path = self._add_base_url(full_path, base_url)
+            # Normalize to _images/filename
+            image_path = f"_images/{filename}"
 
-                    # Return the updated directive with the full path
-                    print(f"{prefix}{full_path}")
-                    return f"{prefix}{full_path}"
+            # Apply base URL if present
+            if base_url:
+                full_path = self._add_base_url(image_path, base_url)
+            else:
+                full_path = image_path
 
-                # Production case (not in test)
-                elif "_sources" in str(source_path):
-                    # Extract the part after _sources/
-                    rel_doc_path, rel_doc_dir, rel_doc_path_parts = (
-                        self._extract_relative_document_path(source_path)
-                    )
+            return f"{prefix}{full_path}"
 
-                    if rel_doc_path_parts:
-                        # For test subdirectory handling - this is for our test cases
-                        if (
-                            len(rel_doc_path_parts) > 0
-                            and rel_doc_path_parts[0] == "subdir"
-                        ):
-                            full_path = os.path.normpath(os.path.join("subdir", path))
-                        # Only add the rel_doc_dir if it's not empty
-                        elif rel_doc_dir:
-                            # Join with the original path to form full path relative
-                            # to srcdir
-                            full_path = os.path.normpath(
-                                os.path.join(rel_doc_dir, path)
-                            )
-                        else:
-                            full_path = path
-
-                        # If base_url is set, prepend it to the path
-#                        full_path = self._add_base_url(full_path, base_url)
-                        full_path = self._add_base_url(path.lstrip("/"), base_url)
-
-                        # Return the updated directive with the full path
-                        print(f"{prefix}{full_path}")
-                        return f"{prefix}{full_path}"
-
-            # If we couldn't resolve the path or it's already absolute, return unchanged
-            return match.group(0)
+#            print(f"✨{prefix}{full_path}")
+            return f"{prefix}{full_path}"
 
         # Replace directive paths in the content
         processed_content = directive_pattern.sub(replace_directive_path, content)
@@ -234,7 +213,7 @@ class DocumentProcessor:
                         possible_paths.append(
                             (Path(self.srcdir) / rel_dir / include_path).resolve()
                         )
-        print(possible_paths)
+#        print(possible_paths)
         return possible_paths
 
     def _process_includes(self, content: str, source_path: Path) -> str:
