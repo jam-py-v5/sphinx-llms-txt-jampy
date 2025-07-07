@@ -108,6 +108,12 @@ class DocumentProcessor:
             True if the path is absolute or a URL, False otherwise
         """
         return path.startswith(("http://", "https://", "/", "data:"))
+    def _is_absolute_or_url(self, path: str) -> bool:
+        """Check if a path is a true absolute path or external URL."""
+        # Accept Sphinx-style build-root paths like /_images/...
+        if path.startswith("/_images/") or path.startswith("/_static/"):
+            return False
+        return path.startswith(("http://", "https://", "/", "data:"))
 
     def _process_path_directives(self, content: str, source_path: Path) -> str:
         """Process directives with paths that need to be resolved.
@@ -148,6 +154,7 @@ class DocumentProcessor:
                     full_path = self._add_base_url(full_path, base_url)
 
                     # Return the updated directive with the full path
+                    print(f"{prefix}{full_path}")
                     return f"{prefix}{full_path}"
 
                 # Production case (not in test)
@@ -175,9 +182,11 @@ class DocumentProcessor:
                             full_path = path
 
                         # If base_url is set, prepend it to the path
-                        full_path = self._add_base_url(full_path, base_url)
+#                        full_path = self._add_base_url(full_path, base_url)
+                        full_path = self._add_base_url(path.lstrip("/"), base_url)
 
                         # Return the updated directive with the full path
+                        print(f"{prefix}{full_path}")
                         return f"{prefix}{full_path}"
 
             # If we couldn't resolve the path or it's already absolute, return unchanged
@@ -225,7 +234,7 @@ class DocumentProcessor:
                         possible_paths.append(
                             (Path(self.srcdir) / rel_dir / include_path).resolve()
                         )
-
+        print(possible_paths)
         return possible_paths
 
     def _process_includes(self, content: str, source_path: Path) -> str:
